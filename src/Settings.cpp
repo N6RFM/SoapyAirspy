@@ -27,12 +27,41 @@
 #include <SoapySDR/Logger.h>
 #include <fmt/format.h>
 
-SoapyAirspy::SoapyAirspy(const SoapySDR::Kwargs &args)
-    : dev_(nullptr), sampleSize_(0), gains_(Gains::LINEARITY), rfBias_(false),
-      bitPack_(false), sampleRate_(0), centerFrequency_(0),
-      currentBandwidth_(0), ringbuffer_(1 << 22) {
+// Parse an optional power-of-two "bufsize" device arg (bytes), falling
+// back to the default. Kept as a free function since it must run before
+// the RingBuffer member is constructed.
+static size_t parseRingBufferBytes(const SoapySDR::Kwargs &args) {
+  if (!args.count("bufsize")) {
+    return SOAPY_AIRSPY_DEFAULT_RINGBUFFER_BYTES;
+  }
 
-  // TODO: make ringbuffer size configurable
+  size_t bytes = 0;
+  try {
+    bytes = static_cast<size_t>(std::stoull(args.at("bufsize")));
+  } catch (const std::exception &) {
+    SoapySDR::logf(SOAPY_SDR_ERROR,
+                   "Invalid bufsize arg '%s', using default",
+                   args.at("bufsize").c_str());
+    return SOAPY_AIRSPY_DEFAULT_RINGBUFFER_BYTES;
+  }
+
+  if (bytes == 0 || (bytes & (bytes - 1)) != 0) {
+    SoapySDR::logf(SOAPY_SDR_ERROR,
+                   "bufsize must be a power of two, got %zu, using default",
+                   bytes);
+    return SOAPY_AIRSPY_DEFAULT_RINGBUFFER_BYTES;
+  }
+
+  return bytes;
+}
+
+SoapyAirspy::SoapyAirspy(const SoapySDR::Kwargs &args)
+    : serial_(0), dev_(nullptr), linearityGain_(0), sensitivityGain_(0),
+      lnaGain_(0), mixerGain_(0), vgaGain_(0), sampleSize_(0),
+      gains_(Gains::LINEARITY), rfBias_(false), bitPack_(false),
+      agcMode_(false), sampleRate_(0), centerFrequency_(0),
+      currentBandwidth_(0), ringbuffer_(parseRingBufferBytes(args)) {
+
   int ret = 0;
 
   // Set log level using environment variable SOAPY_SDR_LOG_LEVEL, for example
@@ -82,16 +111,21 @@ SoapyAirspy::SoapyAirspy(const SoapySDR::Kwargs &args)
     }
   }
 
-  // TODO: This leads to a virtual call in the constructor.
-  // // Apply arguments to settings when they match
-  // for (const auto &info : getSettingInfo()) {
-  //   const auto it = args.find(info.key);
-  //   if (it != args.end()) {
-  //     SoapySDR::logf(SOAPY_SDR_DEBUG, "SoapyAirspy::SoapyAirspy(%s) = %s",
-  //                    info.key.c_str(), it->second.c_str());
-  //     writeSetting(it->first, it->second);
-  //   }
-  // }
+  // Apply device-args (e.g. "soapy=0,driver=airspy,biastee=true") to
+  // settings when they match a known setting key. This must run after
+  // dev_ is opened (writeSetting talks to the hardware) and after all
+  // data members above are initialized (writeSetting/getSettingInfo
+  // touch rfBias_, bitPack_, gains_). SoapyAirspy has no subclasses, so
+  // this virtual call always dispatches to SoapyAirspy's own
+  // implementation -- it's the same pattern upstream SoapyAirspy uses.
+  for (const auto &info : getSettingInfo()) {
+    const auto it = args.find(info.key);
+    if (it != args.end()) {
+      SoapySDR::logf(SOAPY_SDR_DEBUG, "SoapyAirspy::SoapyAirspy(%s) = %s",
+                     info.key.c_str(), it->second.c_str());
+      writeSetting(it->first, it->second);
+    }
+  }
 
   // Get number of available sample rates
   uint32_t num_rates;
@@ -717,6 +751,31 @@ SoapySDR::ArgInfoList SoapyAirspy::getSettingInfo(void) const {
 
   setArgs.push_back(gainsArg);
 
+  // Read-only stats, useful for tuning "bufsize".
+  SoapySDR::ArgInfo overflowArg;
+  overflowArg.key = "overflow_count";
+  overflowArg.name = "Overflow count";
+  overflowArg.description =
+      "Number of ring buffer write timeouts (dropped sample blocks) "
+      "since stream start or last reset.";
+  overflowArg.type = SoapySDR::ArgInfo::INT;
+  setArgs.push_back(overflowArg);
+
+  SoapySDR::ArgInfo watermarkArg;
+  watermarkArg.key = "high_watermark";
+  watermarkArg.name = "Ring buffer high watermark";
+  watermarkArg.description =
+      "Largest number of queued bytes observed in the ring buffer.";
+  watermarkArg.type = SoapySDR::ArgInfo::INT;
+  setArgs.push_back(watermarkArg);
+
+  SoapySDR::ArgInfo capacityArg;
+  capacityArg.key = "ringbuffer_capacity";
+  capacityArg.name = "Ring buffer capacity";
+  capacityArg.description = "Ring buffer capacity in bytes.";
+  capacityArg.type = SoapySDR::ArgInfo::INT;
+  setArgs.push_back(capacityArg);
+
   return setArgs;
 }
 
@@ -759,6 +818,9 @@ void SoapyAirspy::writeSetting(const std::string &key,
       SoapySDR::logf(SOAPY_SDR_ERROR, "Invalid gain mode specified.");
       gains_ = Gains::LINEARITY;
     }
+  } else if (key == "reset_stats") {
+    overflowCount_.store(0, std::memory_order_relaxed);
+    highWaterMark_.store(0, std::memory_order_relaxed);
   } else {
     SoapySDR::logf(SOAPY_SDR_ERROR, "writeSetting() unknown key: %s",
                    key.c_str());
@@ -786,6 +848,12 @@ std::string SoapyAirspy::readSetting(const std::string &key) const {
       return "manual";
     }
     }
+  } else if (key == "overflow_count") {
+    return std::to_string(overflowCount_.load(std::memory_order_relaxed));
+  } else if (key == "high_watermark") {
+    return std::to_string(highWaterMark_.load(std::memory_order_relaxed));
+  } else if (key == "ringbuffer_capacity") {
+    return std::to_string(ringbuffer_.size());
   }
 
   SoapySDR::logf(SOAPY_SDR_WARNING,

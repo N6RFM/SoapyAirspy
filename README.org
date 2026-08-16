@@ -1,5 +1,11 @@
 * Soapy SDR plugin for Airspy R2 and Mini
 
+This is a fork of [[https://github.com/ast/SoapyAirspy][ast/SoapyAirspy]] (the =v2= rewrite, itself
+based on [[https://github.com/pothosware/SoapyAirspy][pothosware/SoapyAirspy]]), with fixes for bias tee, buffer
+overflow handling, and buffer sizing. All credit for the original
+driver and the =v2= mmap ring-buffer rewrite goes to those projects;
+see [[#credits][Credits]] below.
+
 ** Building
 
 Make sure you have SoapySDR installed and do something like this:
@@ -23,25 +29,106 @@ Use this device string in GQRX:
 More settings are available:
 
 #+begin_src
-    soapy=0,driver=airspy,biastee=true|false,gains=linearity|sensitivity|manual
+    soapy=0,driver=airspy,biastee=true|false,gains=linearity|sensitivity|manual,bitpack=true|false,bufsize=<bytes>
 #+end_src
+
+- =biastee= - enable the 4.5V bias tee (see [[#fixes-in-this-fork][Fixes in this fork]] below for
+  why this didn't reliably work upstream)
+- =gains= - gain mode: =linearity=, =sensitivity=, or =manual=
+- =bitpack= - pack 4 12-bit samples into 3 16-bit words (25% less USB traffic)
+- =bufsize= - ring buffer capacity in bytes, must be a power of two
+  (default 4194304 / 4MiB). Increase this if you see overflows under
+  host-side scheduling jitter; see the stats below to tell whether it's
+  needed.
+
+Runtime stats are exposed as read-only settings (readable via
+=SoapySDRUtil --probe=, or =SoapySDR::Device::readSetting()=):
+
+- =overflow_count= - number of ring buffer write timeouts (dropped
+  sample blocks) since stream start or last reset
+- =high_watermark= - largest number of queued bytes ever observed in
+  the ring buffer
+- =ringbuffer_capacity= - current ring buffer capacity in bytes
+
+Write =reset_stats= (any value) to zero the counters above.
+
+** Fixes in this fork
+:PROPERTIES:
+:CUSTOM_ID: fixes-in-this-fork
+:END:
+
+*** Bias tee not reliably turning on (the main fix)
+
+Upstream, bias tee (and =bitpack=) were only ever asserted once, in
+the device constructor, immediately after opening the device -- before
+the caller (GQRX, GNU Radio, etc.) sets a sample rate or activates the
+stream. In practice this meant the setting could be silently lost by
+the time streaming actually started, and behavior ended up depending
+on whatever another application had last left the hardware state as
+(e.g. toggling bias tee on in SDR++ would "stick" independently of
+what any SoapySDR-based app requested).
+
+[[https://github.com/AlexandreRouma/SDRPlusPlus][SDR++'s]] native Airspy driver does not have this problem, because it
+re-asserts =airspy_set_rf_bias()= every time streaming starts, *after*
+setting the sample rate, immediately before =airspy_start_rx()=. This
+fork adopts the same ordering: =activateStream()= now re-applies both
+bias tee and bit-packing right before starting RX, every time. Each
+application now reliably gets the state it asked for, rather than
+inheriting whatever a previous session left behind.
+
+*** Device-args string not applying settings
+
+The constructor never applied =biastee=/=bitpack=/=gains= from the
+device-args string (e.g. =soapy=0,driver=airspy,biastee=true=) --
+that code was present but commented out. This is now re-enabled; it's
+safe because =SoapyAirspy= has no subclasses, so the virtual
+=writeSetting()= call always dispatches correctly.
+
+*** Uninitialized members
+
+=serial_=, the gain-stage fields, and =agcMode_= were left
+uninitialized in the constructor when opened without a =serial=
+device arg, which could return garbage from =getHardwareInfo()=/
+=getGain()= before anything set them explicitly.
+
+*** Silent sample drops / no overflow signaling
+
+The ring buffer would silently drop a block of samples on write
+timeout, logging at INFO level only -- =readStream()= never returned
+=SOAPY_SDR_OVERFLOW=, so callers had no way to detect drops. This now
+matches upstream =pothosware/SoapyAirspy='s behavior: an overflow sets
+a flag that =readStream()= reports on the next call.
+
+*** Fixed 4MB ring buffer size
+
+Ring buffer capacity is now configurable via the =bufsize= device arg
+instead of a hardcoded =1 << 22=, with =overflow_count=/
+=high_watermark= exposed so you can actually tell whether increasing
+it helps for your workload rather than guessing.
 
 ** This branch (v2)
 
-*This branch is work in progress.*
+*This branch is work in progress* (upstream description, still
+applies -- see fixes above for what's changed on top of it).
 
 The code is significantly simpler than the previous version and most
 likely it has better performance. Quite a few bugs have been fixed,
 and some new ones have probably been introduced. Please help me find
 them! :-)
 
-I have tested this with GQRX with good results.
+** Credits
+:PROPERTIES:
+:CUSTOM_ID: credits
+:END:
 
-** Support me
-
-Please consider sponsoring me on GitHub if you enjoy this
-work. Everything I earn through donations will go to families and
-children of Ukraine who have lost their homes because of the war.
+- Original SoapyAirspy driver: Charles J. Cliffe and the
+  [[https://github.com/pothosware/SoapyAirspy][pothosware/SoapyAirspy]] contributors
+- =v2= mmap ring-buffer rewrite: [[https://github.com/ast][ast]] ([[https://github.com/ast/SoapyAirspy][ast/SoapyAirspy]])
+- Fixes and additions in this fork (bias-tee ordering, device-args
+  application, overflow signaling, buffer instrumentation): N6RFM,
+  with Claude (Anthropic)
+- Bias-tee-ordering fix in this fork adapted from
+  [[https://github.com/AlexandreRouma/SDRPlusPlus][SDR++]]'s native Airspy source module
 
 ** Dependencies
 

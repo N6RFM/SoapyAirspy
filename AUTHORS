@@ -1,0 +1,16 @@
+# Authors
+
+## This fork (bias-tee fix, buffer instrumentation, test tooling)
+
+- N6RFM
+- Claude (Anthropic) — pair-programmed the fixes, tests, and
+  documentation in this fork with N6RFM
+
+## Upstream
+
+- Charles J. Cliffe and contributors — original SoapyAirspy driver
+  (https://github.com/pothosware/SoapyAirspy)
+- ast — v2 mmap ring-buffer rewrite
+  (https://github.com/ast/SoapyAirspy)
+
+See CHANGES.md for a detailed list of what changed in this fork and why.

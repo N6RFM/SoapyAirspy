@@ -103,7 +103,7 @@ int SoapyAirspy::rx_callback(airspy_transfer *transfer) {
 
   const auto copied = ringbuffer_.write_at_least(
       to_copy, timeout,
-      [&](uint8_t *begin, [[maybe_unused]] const uint32_t available) {
+      [&](uint8_t *begin, [[maybe_unused]] const size_t available) {
         // Copy samples to ring buffer.
         std::memcpy(begin, transfer->samples, to_copy);
         // Tell ringbuffer to how many we produced.
@@ -111,10 +111,30 @@ int SoapyAirspy::rx_callback(airspy_transfer *transfer) {
       });
 
   if (copied < 0) {
+    // Ring buffer was full: the consumer (readStream) isn't draining
+    // fast enough and this block of samples was dropped.
+    overflowCount_.fetch_add(1, std::memory_order_relaxed);
+    overflowPending_.store(true, std::memory_order_release);
+
     SoapySDR::logf(SOAPY_SDR_INFO,
-                   "SoapyAirspy::rx_callback: ringbuffer write timeout");
-    // TODO. Improve overflow handling?
+                   "SoapyAirspy::rx_callback: ringbuffer write timeout, "
+                   "dropped %zu bytes (overflow #%llu)",
+                   to_copy,
+                   static_cast<unsigned long long>(
+                       overflowCount_.load(std::memory_order_relaxed)));
     return 0;
+  }
+
+  // Track the largest queue depth we've observed. Must use the
+  // producer-side accessor (free_to_write(), paired with capacity()) --
+  // available() reads a consumer-only cached value with no
+  // synchronization from this thread and silently returns stale/zero
+  // data when called from the producer side.
+  const auto avail = ringbuffer_.capacity() - ringbuffer_.free_to_write();
+  auto prevMax = highWaterMark_.load(std::memory_order_relaxed);
+  while (avail > prevMax &&
+         !highWaterMark_.compare_exchange_weak(
+             prevMax, avail, std::memory_order_relaxed)) {
   }
 
   return 0; // anything else is an error.
@@ -243,6 +263,27 @@ int SoapyAirspy::activateStream(SoapySDR::Stream *stream, const int flags,
   // Clear ringbuffer of old samples
   ringbuffer_.clear();
 
+  // Re-assert bias tee (and packing) immediately before starting RX,
+  // matching SDR++'s airspy_source ordering. airspy_set_samplerate()
+  // (called earlier, via SoapySDR::setSampleRate before the stream is
+  // activated) appears to reset the bias-tee GPIO state on some
+  // firmware/hardware revisions -- setting biastee once at device
+  // construction (before any sample rate is chosen) can silently be
+  // wiped out by the time streaming actually starts. Re-applying it
+  // here, last, right before airspy_start_rx(), avoids that ordering
+  // hazard regardless of when the caller set biastee.
+  ret = airspy_set_rf_bias(dev_, rfBias_);
+  if (ret != AIRSPY_SUCCESS) {
+    SoapySDR::logf(SOAPY_SDR_ERROR,
+                   "airspy_set_rf_bias() failed on activateStream: %d", ret);
+  }
+
+  ret = airspy_set_packing(dev_, bitPack_);
+  if (ret != AIRSPY_SUCCESS) {
+    SoapySDR::logf(SOAPY_SDR_ERROR,
+                   "airspy_set_packing() failed on activateStream: %d", ret);
+  }
+
   ret = airspy_start_rx(dev_, rx_callback_, this);
   if (ret != AIRSPY_SUCCESS) {
     SoapySDR::logf(SOAPY_SDR_ERROR, "airspy_start_rx() failed: %d", ret);
@@ -286,15 +327,24 @@ int SoapyAirspy::readStream(SoapySDR::Stream *stream, void *const *buffs,
   SoapySDR::logf(SOAPY_SDR_DEBUG, "readStream(%d, %d, %d, %d)", numElems, flags,
                  timeNs, timeoutUs);
 
-  // Some applications require this. We don't use flags.
   flags = 0;
+
+  // Report and clear a pending overflow before returning more data, so
+  // the caller (e.g. GQRX) knows samples were dropped and can resync /
+  // display a warning, matching upstream SoapyAirspy's behavior.
+  bool expectedOverflow = true;
+  if (overflowPending_.compare_exchange_strong(
+          expectedOverflow, false, std::memory_order_acq_rel)) {
+    flags |= SOAPY_SDR_OVERFLOW;
+    return SOAPY_SDR_OVERFLOW;
+  }
 
   const auto to_copy =
       std::min(numElems * sampleSize_, getStreamMTU(stream) * sampleSize_);
 
   const auto copied = ringbuffer_.read_at_least(
       to_copy, std::chrono::microseconds(timeoutUs),
-      [&](const uint8_t *begin, [[maybe_unused]] const uint32_t available) {
+      [&](const uint8_t *begin, [[maybe_unused]] const size_t available) {
         // Copy to output buffer
         std::memcpy(buffs[0], begin, to_copy);
         // Consume from ring buffer

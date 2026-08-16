@@ -42,6 +42,11 @@
 // 65536
 #define SOAPY_AIRSPY_STREAM_MTU (1 << 16)
 
+// Default ring buffer capacity in bytes (4 MiB). Must stay a power of
+// two >= the system page size. Override per-device with the "bufsize"
+// device arg, e.g. driver=airspy,bufsize=8388608
+#define SOAPY_AIRSPY_DEFAULT_RINGBUFFER_BYTES (1 << 22)
+
 class SoapySDR::Stream {
 public:
   virtual ~Stream(void) {}
@@ -83,6 +88,17 @@ class SoapyAirspy : public SoapySDR::Device {
   double currentBandwidth_;
 
   RingBuffer<uint8_t> ringbuffer_;
+
+  // --- Buffer instrumentation ---
+  // Number of times the producer (USB callback thread) could not write
+  // because the ring buffer was full, i.e. samples were dropped.
+  std::atomic<uint64_t> overflowCount_{0};
+  // High-water mark: largest number of bytes ever observed queued for
+  // read. Sampled from the producer side after each successful write.
+  std::atomic<size_t> highWaterMark_{0};
+  // Set by the producer when a drop occurs; consumed (and cleared) by
+  // readStream so SOAPY_SDR_OVERFLOW can be reported to the caller.
+  std::atomic<bool> overflowPending_{false};
 
   SoapySDR::ConverterRegistry::ConverterFunction converterFunction_;
 
