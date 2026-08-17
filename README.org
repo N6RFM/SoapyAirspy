@@ -20,6 +20,31 @@ Make sure you have SoapySDR installed and do something like this:
 
 ** Using
 
+*** Construction arguments (driver=, serial=)
+
+These select and open a specific device -- consumed once, before the
+device even exists yet, so they never show up in
+=SoapySDRUtil --probe='s "Other Settings" list (that list is only for
+the runtime settings covered below).
+
+- =driver=airspy= - required, tells SoapySDR to use this driver
+- =serial=<hex>= - selects a specific physical unit by serial number,
+  e.g. =serial=744c60c8218e3e4f=. *Required if you have more than one
+  Airspy connected* -- without it, SoapySDR's =Device::make()=
+  silently opens whichever matching device happens to enumerate
+  first (typically USB bus order, not something this driver -- or
+  SoapySDR itself -- guarantees stays the same across reboots or
+  reconnects). With only one Airspy connected, =serial== is optional.
+  Find your device's serial with:
+  #+begin_src bash
+  SoapySDRUtil --find="driver=airspy"
+  #+end_src
+  Either hex format works identically --
+  =serial=744c60c8218e3e4f= and =serial=0x744c60c8218e3e4f= parse to
+  the same value (=std::stoull(..., 16)= optionally accepts a leading
+  =0x= when the base is 16). =SoapySDRUtil --find= prints the
+  no-prefix form, so that's the simplest to copy-paste directly.
+
 Use this device string in GQRX:
 
 #+begin_src
@@ -51,6 +76,12 @@ Runtime stats are exposed as read-only settings (readable via
 - =ringbuffer_capacity= - current ring buffer capacity in bytes
 
 Write =reset_stats= (any value) to zero the counters above.
+
+(=soapy=0= in the examples above isn't a SoapySDR or SoapyAirspy
+concept at all -- it's specific to whatever application you're using
+this with. See e.g.
+[[https://github.com/N6RFM/gr-osmocom_n6rfm#device-arguments-explained][gr-osmocom_n6rfm's README]]
+for what it actually does there.)
 
 ** Fixes in this fork
 :PROPERTIES:
