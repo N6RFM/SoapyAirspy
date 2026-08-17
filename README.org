@@ -6,6 +6,13 @@ overflow handling, and buffer sizing. All credit for the original
 driver and the =v2= mmap ring-buffer rewrite goes to those projects;
 see [[#credits][Credits]] below.
 
+Part of a set of three related repos, built together:
+- [[https://github.com/N6RFM/gr-osmocom_n6rfm][gr-osmocom_n6rfm]] -- GNU Radio/GRC-level controls (Bias Tee
+  checkbox, Gain Table dropdown) and =rx_overflow= stream tag
+  emission, built on top of the fixes in this repo
+- [[https://github.com/N6RFM/gr-overflow-monitor][gr-overflow-monitor]] -- a real, installable GRC block that reads
+  those =rx_overflow= tags and logs pass reliability data
+
 ** Building
 
 Make sure you have SoapySDR installed and do something like this:
@@ -129,6 +136,14 @@ timeout, logging at INFO level only -- =readStream()= never returned
 =SOAPY_SDR_OVERFLOW=, so callers had no way to detect drops. This now
 matches upstream =pothosware/SoapyAirspy='s behavior: an overflow sets
 a flag that =readStream()= reports on the next call.
+
+This is the signal [[https://github.com/N6RFM/gr-osmocom_n6rfm][gr-osmocom_n6rfm]] builds on: its patched
+=soapy_source_c= turns each =SOAPY_SDR_OVERFLOW= into a
+=rx_overflow= GNU Radio stream tag at the exact sample offset, which
+[[https://github.com/N6RFM/gr-overflow-monitor][gr-overflow-monitor]]'s =Overflow Tag Monitor= block reads and logs.
+=get_overflow_count()= also exposes a running total to Python
+directly. None of this has anything to report against the unpatched
+upstream driver.
 
 *** Fixed 4MB ring buffer size
 
