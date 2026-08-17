@@ -34,6 +34,29 @@ device even exists yet, so they never show up in
 =SoapySDRUtil --probe='s "Other Settings" list (that list is only for
 the runtime settings covered below).
 
+A full device string typically looks like
+=driver=airspy,serial=744c60c8218e3e4f,soapy=0=. Three genuinely
+separate pieces, handled by three different layers -- worth knowing
+which is which, since no single tool documents all of them together:
+
+- =driver=airspy= -- SoapySDR's own universal driver-selection key,
+  handled by SoapySDR core's registry matching.
+- =serial=744c60c8218e3e4f= -- a SoapyAirspy-specific construction
+  arg, handled by this driver's constructor directly (details below).
+- =soapy=0= -- =gr-osmosdr='s own routing switch, not a SoapySDR or
+  SoapyAirspy concept at all. Handled entirely by that project's
+  =source_impl.cc=; the ={N}= is *not* a device selector the way
+  =serial== is -- =gr-osmosdr= only checks whether the =soapy= key is
+  *present* to decide "use the generic SoapySDR backend," and never
+  reads its value. The =N= you see in different examples (=soapy=0=,
+  =soapy=1=, etc.) is just a leftover artifact of how =gr-osmosdr=
+  numbers devices when it auto-generates a device list for you --
+  when you're hand-typing your own device string, any value works
+  identically, since =serial== is what actually picks the physical
+  unit. Full explanation in
+  [[https://github.com/N6RFM/gr-osmocom_n6rfm#device-arguments-explained][gr-osmocom_n6rfm's own "Device Arguments Explained" section]],
+  which owns that code.
+
 - =driver=airspy= - required, tells SoapySDR to use this driver
 - =serial=<hex>= - selects a specific physical unit by serial number,
   e.g. =serial=744c60c8218e3e4f=. *Required if you have more than one
