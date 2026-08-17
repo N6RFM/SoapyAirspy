@@ -106,16 +106,6 @@ instead of a hardcoded =1 << 22=, with =overflow_count=/
 =high_watermark= exposed so you can actually tell whether increasing
 it helps for your workload rather than guessing.
 
-** This branch (v2)
-
-*This branch is work in progress* (upstream description, still
-applies -- see fixes above for what's changed on top of it).
-
-The code is significantly simpler than the previous version and most
-likely it has better performance. Quite a few bugs have been fixed,
-and some new ones have probably been introduced. Please help me find
-them! :-)
-
 ** Credits
 :PROPERTIES:
 :CUSTOM_ID: credits
