@@ -776,6 +776,14 @@ SoapySDR::ArgInfoList SoapyAirspy::getSettingInfo(void) const {
   capacityArg.type = SoapySDR::ArgInfo::INT;
   setArgs.push_back(capacityArg);
 
+  SoapySDR::ArgInfo resetStatsArg;
+  resetStatsArg.key = "reset_stats";
+  resetStatsArg.name = "Reset stats";
+  resetStatsArg.description =
+      "Write any value to zero out overflow_count and high_watermark.";
+  resetStatsArg.type = SoapySDR::ArgInfo::STRING;
+  setArgs.push_back(resetStatsArg);
+
   return setArgs;
 }
 
